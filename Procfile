@@ -1,1 +1,1 @@
-worker: python main.py --loop
+worker: python -u main.py --loop
