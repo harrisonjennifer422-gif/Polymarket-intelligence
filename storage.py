@@ -9,10 +9,20 @@ tick-level data across many users.
 """
 
 import sqlite3
+import os
 from datetime import datetime, timezone
 from contextlib import contextmanager
 
 from config import DB_PATH
+
+# Ensure the directory for the DB file exists. Git doesn't track empty
+# folders, so a fresh clone/deploy (like on Railway) can be missing
+# data/ entirely even though it existed locally. Creating it at import
+# time means this never depends on the deploy environment having it
+# pre-made.
+_db_dir = os.path.dirname(DB_PATH)
+if _db_dir:
+    os.makedirs(_db_dir, exist_ok=True)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scan_runs (
