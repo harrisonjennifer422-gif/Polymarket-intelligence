@@ -1,93 +1,108 @@
 """
-Polymarket Data API client (public, no auth) - data-api.polymarket.com
+Polymarket data client - Gamma API (public, no auth).
 
-Used for wallet-level research: leaderboard discovery and per-wallet trade
-history. This is a separate host/API from Gamma (market metadata) and CLOB
-(order books) - it's the one that exposes on-chain positions, trades, and
-activity keyed by wallet address.
+Gamma is the discovery/metadata API. It returns outcome prices directly
+(no need to hit CLOB for a basic scanner), though Gamma prices can lag
+the live order book by a few seconds. That's fine for a mispricing
+*scanner* - it is not fine if you were building a latency-sensitive bot.
+
+Pagination: Gamma uses cursor-based keyset pagination
+(after_cursor / next_cursor), max page size 100.
 """
 
-from config import DATA_API_BASE
+import json
+from config import GAMMA_API_BASE
 from http_utils import get_json
 
 
-def fetch_leaderboard(pool_size: int, category: str = "OVERALL",
-                       time_period: str = "ALL", order_by: str = "PNL"):
-    """
-    Pull top traders from the leaderboard. Max 50 per page, max offset 1000
-    (per the documented API limits), so pool_size is capped accordingly.
+def _safe_json_list(raw):
+    """Gamma returns outcomes/outcomePrices as JSON-encoded strings."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
 
-    Returns a list of dicts: rank, proxy_wallet, username, vol, pnl,
-    verified_badge.
-    """
-    pool_size = min(pool_size, 1050)  # API's documented ceiling (offset max 1000 + limit 50)
-    entries = []
-    offset = 0
-    page_size = 50  # API's documented max per page
 
-    while len(entries) < pool_size:
+def fetch_active_events(max_events: int = 500, page_size: int = 100):
+    """
+    Pull active (non-closed) events with their nested markets.
+    Returns a list of normalized event dicts.
+    """
+    events = []
+    cursor = None
+
+    while len(events) < max_events:
         params = {
-            "category": category,
-            "timePeriod": time_period,
-            "orderBy": order_by,
-            "limit": min(page_size, pool_size - len(entries)),
-            "offset": offset,
+            "closed": "false",
+            "limit": min(page_size, max_events - len(events)),
         }
-        page = get_json(f"{DATA_API_BASE}/v1/leaderboard", params=params)
+        if cursor:
+            params["after_cursor"] = cursor
 
-        if not page:
+        data = get_json(f"{GAMMA_API_BASE}/events", params=params)
+
+        # Gamma's /events can return either a bare list or a paginated
+        # envelope depending on version; handle both defensively.
+        if isinstance(data, dict):
+            page_events = data.get("data", data.get("events", []))
+            cursor = data.get("next_cursor")
+        else:
+            page_events = data
+            cursor = None
+
+        if not page_events:
             break
 
-        for entry in page:
-            entries.append({
-                "rank": entry.get("rank"),
-                "proxy_wallet": entry.get("proxyWallet"),
-                "username": entry.get("userName"),
-                "vol": _to_float(entry.get("vol")),
-                "pnl": _to_float(entry.get("pnl")),
-                "verified_badge": bool(entry.get("verifiedBadge", False)),
-            })
+        for ev in page_events:
+            events.append(_normalize_event(ev))
 
-        offset += page_size
-        if len(page) < page_size:
-            break  # last page
+        if not cursor:
+            break
 
-    return entries
+    return events
 
 
-def fetch_wallet_trade_summary(proxy_wallet: str, max_trades: int):
-    """
-    Pull up to `max_trades` TRADE activity records for a wallet, sorted
-    oldest-first. This single call serves double duty:
+def _normalize_event(ev: dict) -> dict:
+    markets = []
+    for m in ev.get("markets", []):
+        outcomes = _safe_json_list(m.get("outcomes"))
+        prices = _safe_json_list(m.get("outcomePrices"))
+        clob_token_ids = _safe_json_list(m.get("clobTokenIds"))
 
-    1. If the wallet has fewer than max_trades total trades, this returns
-       ALL of them - giving us both the exact trade count AND the earliest
-       trade timestamp (= wallet age) in one request.
-    2. If it returns exactly max_trades, we know the wallet has AT LEAST
-       that many trades and can disqualify it immediately without paginating
-       further - this is deliberately cheap for wallets that don't qualify.
+        # Build outcome -> price map defensively (lengths should match,
+        # but real-world API data is not always perfectly clean)
+        outcome_prices = {}
+        for i, name in enumerate(outcomes):
+            try:
+                outcome_prices[name] = float(prices[i])
+            except (IndexError, ValueError, TypeError):
+                continue
 
-    Returns: {"trade_count": int, "hit_cap": bool, "first_trade_ts": int|None,
-              "last_trade_ts": int|None}
-    """
-    params = {
-        "user": proxy_wallet,
-        "type": "TRADE",
-        "limit": max_trades,
-        "sortBy": "TIMESTAMP",
-        "sortDirection": "ASC",  # oldest first, so result[0] = earliest trade
-    }
-    activity = get_json(f"{DATA_API_BASE}/activity", params=params)
+        markets.append({
+            "market_id": m.get("id"),
+            "condition_id": m.get("conditionId"),
+            "question": m.get("question"),
+            "group_item_title": m.get("groupItemTitle"),
+            "outcomes": outcomes,
+            "outcome_prices": outcome_prices,
+            "clob_token_ids": clob_token_ids,
+            "liquidity": _to_float(m.get("liquidity")),
+            "volume_24h": _to_float(m.get("volume24hr") or m.get("volume24hrClob")),
+            "neg_risk": bool(m.get("negRisk", False)),
+            "closed": bool(m.get("closed", False)),
+            "end_date": m.get("endDate"),
+        })
 
-    if not activity:
-        return {"trade_count": 0, "hit_cap": False, "first_trade_ts": None, "last_trade_ts": None}
-
-    hit_cap = len(activity) >= max_trades
     return {
-        "trade_count": len(activity),
-        "hit_cap": hit_cap,
-        "first_trade_ts": activity[0].get("timestamp"),
-        "last_trade_ts": activity[-1].get("timestamp"),
+        "event_id": ev.get("id"),
+        "title": ev.get("title"),
+        "slug": ev.get("slug"),
+        "neg_risk": bool(ev.get("negRisk", False)),
+        "markets": markets,
     }
 
 
