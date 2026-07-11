@@ -61,6 +61,21 @@ CREATE TABLE IF NOT EXISTS cross_platform_flags (
     flagged_at TEXT NOT NULL,
     FOREIGN KEY (run_id) REFERENCES scan_runs(id)
 );
+
+CREATE TABLE IF NOT EXISTS wallet_candidates (
+    proxy_wallet TEXT PRIMARY KEY,
+    username TEXT,
+    rank TEXT,
+    pnl REAL,
+    vol REAL,
+    trade_count INTEGER,
+    wallet_age_days REAL,
+    pnl_per_trade REAL,
+    first_seen_run_id INTEGER,
+    first_seen_at TEXT NOT NULL,
+    last_seen_run_id INTEGER,
+    last_seen_at TEXT NOT NULL
+);
 """
 
 
@@ -127,6 +142,49 @@ def insert_cross_platform_flag(run_id, poly_market_id, poly_question,
              kalshi_title, similarity, poly_prob, kalshi_prob,
              deviation, _now()),
         )
+
+
+def upsert_wallet_candidate(run_id, candidate: dict) -> bool:
+    """
+    Insert or update a wallet candidate. Returns True if this wallet is
+    being seen for the first time (i.e. newly qualified) - used to decide
+    whether to send a Discord alert, so you don't get re-alerted on the
+    same wallet every single scan cycle.
+    """
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT proxy_wallet FROM wallet_candidates WHERE proxy_wallet = ?",
+            (candidate["proxy_wallet"],),
+        ).fetchone()
+
+        is_new = existing is None
+        now = _now()
+
+        if is_new:
+            conn.execute(
+                """INSERT INTO wallet_candidates
+                   (proxy_wallet, username, rank, pnl, vol, trade_count,
+                    wallet_age_days, pnl_per_trade, first_seen_run_id,
+                    first_seen_at, last_seen_run_id, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (candidate["proxy_wallet"], candidate["username"], candidate["rank"],
+                 candidate["pnl"], candidate["vol"], candidate["trade_count"],
+                 candidate["wallet_age_days"], candidate["pnl_per_trade"],
+                 run_id, now, run_id, now),
+            )
+        else:
+            conn.execute(
+                """UPDATE wallet_candidates
+                   SET username=?, rank=?, pnl=?, vol=?, trade_count=?,
+                       wallet_age_days=?, pnl_per_trade=?, last_seen_run_id=?,
+                       last_seen_at=?
+                   WHERE proxy_wallet=?""",
+                (candidate["username"], candidate["rank"], candidate["pnl"],
+                 candidate["vol"], candidate["trade_count"], candidate["wallet_age_days"],
+                 candidate["pnl_per_trade"], run_id, now, candidate["proxy_wallet"]),
+            )
+
+        return is_new
 
 
 def _now():
