@@ -18,6 +18,7 @@ from config import DISCORD_WEBHOOK_URL, DISCORD_ALERT_MIN_DEVIATION, DISCORD_MAX
 
 _ARB_COLOR = 0xE67E22       # orange
 _CROSS_COLOR = 0x3498DB     # blue
+_WALLET_COLOR = 0x2ECC71    # green
 
 
 def send_alerts(annotated_arb_flags: list, annotated_cross_flags: list, run_id: int):
@@ -57,6 +58,31 @@ def send_alerts(annotated_arb_flags: list, annotated_cross_flags: list, run_id: 
     print(f"Discord: {sent}/{len(alertable)} alert(s) posted successfully.")
 
 
+def send_wallet_alerts(new_wallet_candidates: list, run_id: int):
+    """
+    Alerts only on NEWLY discovered wallet candidates (dedup handled by the
+    caller via storage.upsert_wallet_candidate) - so you get pinged once per
+    wallet, not every scan cycle.
+    """
+    if not DISCORD_WEBHOOK_URL:
+        print("Discord: DISCORD_WEBHOOK_URL not set - skipping wallet alerts.")
+        return
+
+    if not new_wallet_candidates:
+        print("Discord: no new wallet candidates this run - nothing sent.")
+        return
+
+    capped = new_wallet_candidates[:DISCORD_MAX_ALERTS_PER_RUN]
+    print(f"Discord: sending {len(capped)} new wallet candidate alert(s)...")
+    sent = 0
+    for candidate in capped:
+        embed = _build_wallet_embed(candidate, run_id)
+        ok = _post_webhook({"embeds": [embed]})
+        if ok:
+            sent += 1
+    print(f"Discord: {sent}/{len(capped)} wallet alert(s) posted successfully.")
+
+
 def _build_embed(kind: str, flag: dict, run_id: int) -> dict:
     deviation_pp = flag["deviation"] * 100
 
@@ -85,6 +111,33 @@ def _build_embed(kind: str, flag: dict, run_id: int) -> dict:
         "color": color,
         "fields": fields,
         "footer": {"text": f"Polymarket Mispricing Scanner · run #{run_id}"},
+    }
+
+
+def _build_wallet_embed(candidate: dict, run_id: int) -> dict:
+    age_months = candidate["wallet_age_days"] / 30.44
+    name = candidate["username"] or f"{candidate['proxy_wallet'][:10]}…"
+
+    fields = [
+        {"name": "Wallet", "value": f"{name} (rank #{candidate['rank']})", "inline": True},
+        {"name": "All-time PnL", "value": f"${candidate['pnl']:,.0f}", "inline": True},
+        {"name": "Trades", "value": str(candidate["trade_count"]), "inline": True},
+        {"name": "Age", "value": f"{age_months:.1f} months", "inline": True},
+        {"name": "PnL/trade", "value": f"${candidate['pnl_per_trade']:,.0f}", "inline": True},
+        {"name": "Summary", "value": candidate["summary"][:1000], "inline": False},
+        {
+            "name": "Verify before treating as a copy-trade candidate",
+            "value": "\n".join(f"• {c}" for c in candidate["checklist"])[:1000],
+            "inline": False,
+        },
+        {"name": "CTA", "value": candidate["cta"][:500], "inline": False},
+    ]
+
+    return {
+        "title": f"🟢 New wallet candidate — {name}",
+        "color": _WALLET_COLOR,
+        "fields": fields,
+        "footer": {"text": f"Polymarket Wallet Scanner · run #{run_id}"},
     }
 
 
