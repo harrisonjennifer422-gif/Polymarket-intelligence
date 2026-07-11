@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/29910567/README.md)
 # Polymarket Mispricing Scanner (v1)
 
 A research tool that flags price deviations on Polymarket using **two real,
@@ -118,12 +119,45 @@ This repo is Railway-ready as-is (`Procfile` + `railway.json` included).
 
 ## Next steps (in priority order, when you're ready)
 
-1. **Wallet scoring / copy-trading**: pull from Polymarket's Data API
-   (`data-api.polymarket.com`) — it has per-wallet trade history and
-   leaderboards already, no scraping needed. This gets you
-   buy-after-spike-ratio, average-edge-per-trade, and clustering.
+1. **Wallet scoring / copy-trading** ✅ Built. See below.
 2. **Dashboard**: point Grafana or a simple Streamlit app at
    `mispricing.db` — the schema is already flag-history-ready.
 3. **News-lag**: only worth building once you've picked and paid for a
    real low-latency news feed — free feeds won't beat Polymarket's own
    price discovery.
+
+## Wallet scoring (copy-trading research)
+
+Uses Polymarket's public leaderboard (`/v1/leaderboard`) and per-wallet
+trade history (`/activity`) — both real, documented, no-auth endpoints —
+to surface wallets worth researching further, filtered on three things:
+
+- **Genuinely profitable**: all-time PnL above `WALLET_MIN_PNL_USD` (default $2,000)
+- **At least 3-6 months old**: `WALLET_MIN_AGE_DAYS` (default 90 = 3 months; raise to 180 for a 6-month floor). Age is derived from the wallet's actual earliest trade timestamp, not a guess.
+- **"Little trade entries"**: `WALLET_MAX_TRADE_COUNT` (default 150) — wallets with more trades than this are treated as high-frequency/bot-like and skipped, since the goal is selective, high-conviction traders, not volume farmers.
+
+Because each candidate wallet costs one extra API call, this scan runs less
+often than the price scanners — every `WALLET_SCAN_EVERY_N_RUNS` cycles
+(default every 4th scan). New qualifying wallets get a green Discord embed;
+wallets you've already seen don't re-alert every cycle (tracked in the
+`wallet_candidates` table), so your channel doesn't get spammed by the same
+name repeatedly.
+
+**Important, and consistent with your original brief:** this surfaces
+*candidates for research*, not an auto-follow list. A wallet's historical
+PnL on a public leaderboard is not proof of a repeatable edge — it could be
+one lucky binary bet. Every wallet alert includes a verification checklist
+(check current open positions, check PnL concentration, check realized vs.
+unrealized PnL) and a CTA that always points to more research, never to
+"follow this wallet."
+
+Env vars to tune it:
+```
+WALLET_LEADERBOARD_POOL_SIZE=100   # top-N leaderboard wallets examined per scan
+WALLET_MIN_AGE_DAYS=90             # 3 months; use 180 for 6 months
+WALLET_MAX_TRADE_COUNT=150         # "little trade entries" ceiling
+WALLET_MIN_PNL_USD=2000            # minimum all-time PnL to bother considering
+WALLET_SCAN_EVERY_N_RUNS=4         # run wallet scan every Nth scan cycle
+```
+
+To force a wallet scan on a one-off local run: `python main.py --wallet-scan`
