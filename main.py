@@ -20,13 +20,17 @@ import storage
 from polymarket_client import fetch_active_events
 from kalshi_client import fetch_open_markets
 from scanners import arbitrage_scan, cross_platform_scan
-from research import annotate_arbitrage_flag, annotate_cross_platform_flag
-from discord_alerts import send_alerts
+from research import annotate_arbitrage_flag, annotate_cross_platform_flag, annotate_wallet_candidate
+from discord_alerts import send_alerts, send_wallet_alerts
+from wallet_scoring import find_wallet_candidates
 from http_utils import ApiError
-from config import SCAN_INTERVAL_SECONDS, MAX_EVENTS_PER_SCAN, MAX_KALSHI_PER_SCAN
+from config import (
+    SCAN_INTERVAL_SECONDS, MAX_EVENTS_PER_SCAN, MAX_KALSHI_PER_SCAN,
+    WALLET_SCAN_EVERY_N_RUNS,
+)
 
 
-def run_scan(max_events: int, max_kalshi: int):
+def run_scan(max_events: int, max_kalshi: int, include_wallet_scan: bool = False):
     storage.init_db()
     run_id = storage.start_run()
 
@@ -79,6 +83,36 @@ def run_scan(max_events: int, max_kalshi: int):
 
     _print_summary(run_id, events, kalshi_markets, annotated_arb, annotated_cross)
 
+    # --- Module 3: wallet scoring (profitable, aged, low-trade-count wallets) ---
+    # Run less often than the mispricing scans since each candidate costs an
+    # extra API call - gated by include_wallet_scan / WALLET_SCAN_EVERY_N_RUNS.
+    if include_wallet_scan:
+        print(f"\n[run {run_id}] Running wallet candidate scan (leaderboard research)...")
+        try:
+            candidates = find_wallet_candidates()
+        except ApiError as e:
+            print(f"WARNING: wallet scan failed: {e}", file=sys.stderr)
+            candidates = []
+
+        new_candidates = []
+        for c in candidates:
+            is_new = storage.upsert_wallet_candidate(run_id, c)
+            if is_new:
+                new_candidates.append(c)
+
+        annotated_wallets = [annotate_wallet_candidate(c) for c in new_candidates]
+        send_wallet_alerts(annotated_wallets, run_id)
+
+        print(f"[run {run_id}] Wallet scan: {len(candidates)} qualifying wallet(s) "
+              f"found, {len(new_candidates)} newly discovered.")
+        for c in sorted(candidates, key=lambda x: -x["pnl_per_trade"])[:10]:
+            print(
+                f"  {c['username'] or c['proxy_wallet'][:10]+'…'} | "
+                f"pnl=${c['pnl']:,.0f} | trades={c['trade_count']} | "
+                f"age={c['wallet_age_days']/30.44:.1f}mo | "
+                f"$/trade={c['pnl_per_trade']:,.0f}"
+            )
+
 
 def _print_summary(run_id, events, kalshi_markets, arb_flags, cross_flags):
     print("\n" + "=" * 60)
@@ -122,11 +156,19 @@ def run_forever(max_events: int, max_kalshi: int, interval_seconds: int):
     Continuous loop for Railway's worker process type - scans, sleeps,
     repeats. This is what keeps the service alive and scanning 24/7
     instead of running once and exiting.
+
+    Wallet scanning is deliberately run only every WALLET_SCAN_EVERY_N_RUNS
+    cycles, since it costs one extra API call per candidate wallet examined
+    and doesn't need to run as often as the price-based scanners.
     """
     print(f"Starting continuous scan loop (interval={interval_seconds}s). Ctrl+C to stop.")
+    cycle = 0
     while True:
+        cycle += 1
+        run_wallet_scan = (cycle % WALLET_SCAN_EVERY_N_RUNS == 0)
         try:
-            run_scan(max_events=max_events, max_kalshi=max_kalshi)
+            run_scan(max_events=max_events, max_kalshi=max_kalshi,
+                      include_wallet_scan=run_wallet_scan)
         except Exception as e:
             # Never let one bad scan kill the whole worker - log and continue
             print(f"ERROR during scan (will retry next interval): {e}", file=sys.stderr)
@@ -144,9 +186,12 @@ if __name__ == "__main__":
                          help="Run continuously (scan, sleep, repeat) - use this on Railway")
     parser.add_argument("--interval", type=int, default=SCAN_INTERVAL_SECONDS,
                          help="Seconds between scans when using --loop")
+    parser.add_argument("--wallet-scan", action="store_true",
+                         help="Include the wallet-scoring scan on this run (standalone mode only)")
     args = parser.parse_args()
 
     if args.loop:
         run_forever(args.max_events, args.max_kalshi, args.interval)
     else:
-        run_scan(max_events=args.max_events, max_kalshi=args.max_kalshi)
+        run_scan(max_events=args.max_events, max_kalshi=args.max_kalshi,
+                  include_wallet_scan=args.wallet_scan)
