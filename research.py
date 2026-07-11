@@ -69,3 +69,40 @@ def annotate_cross_platform_flag(flag: dict) -> dict:
     )
 
     return {**flag, "summary": summary, "checklist": checklist, "cta": cta}
+
+
+def annotate_wallet_candidate(candidate: dict) -> dict:
+    age_months = candidate["wallet_age_days"] / 30.44
+
+    summary = (
+        f"Wallet {candidate['username'] or candidate['proxy_wallet'][:10]+'…'} "
+        f"(leaderboard rank {candidate['rank']}) shows ${candidate['pnl']:,.0f} "
+        f"all-time PnL across only {candidate['trade_count']} trades "
+        f"(${candidate['pnl_per_trade']:,.0f}/trade) over {age_months:.1f} months — "
+        f"a profile consistent with a selective, high-conviction trader rather "
+        f"than a high-frequency bot."
+    )
+
+    checklist = [
+        "Pull this wallet's live /positions to see current open exposure — "
+        "past PnL on the leaderboard doesn't mean they're still active or "
+        "that their current bets match their historical style.",
+        "Check whether the PnL is concentrated in one or two large binary "
+        "outcomes (a single lucky call) versus spread across many "
+        "independent markets — the former is not a repeatable edge.",
+        "Check realized vs. unrealized PnL where available — a large "
+        "unrealized position in a market that hasn't resolved yet is not "
+        "locked-in profit.",
+        "Cross-check trade timestamps against major news events in their "
+        "markets — consistently fast, pre-move entries are a stronger "
+        "signal than lucky late entries that happened to resolve well.",
+    ]
+
+    cta = (
+        "Next step: pull this wallet's current open positions and recent "
+        "trade-level detail before treating them as a copy-trading "
+        "candidate — this flag means 'worth a deeper look,' not 'worth "
+        "mirroring.'"
+    )
+
+    return {**candidate, "summary": summary, "checklist": checklist, "cta": cta}
