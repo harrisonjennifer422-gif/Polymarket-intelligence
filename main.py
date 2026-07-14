@@ -203,25 +203,67 @@ def _find_relevant_wallets(market_title: str, tracked_wallets: list, threshold: 
 
 
 def _run_wallet_scan(run_id: int):
-    print(f"\n[run {run_id}] Running wallet leaderboard scan...")
-    try:
-        leaderboard = fetch_leaderboard(pool_size=ws_cfg.leaderboard_pool_size)
-    except ApiError as e:
-        print(f"WARNING: leaderboard fetch failed: {e}", file=sys.stderr)
+    """
+    Scans the leaderboard for qualifying wallets. If the strict default
+    filters (aged >=90 days, <150 trades, PnL >=$2000) turn up too few
+    wallets - which happens often, since most high-volume Polymarket
+    wallets trade far more than 150 times - this progressively broadens
+    the search rather than silently returning just 1 wallet.
+    """
+    target_min_wallets = 5
+    attempts = [
+        {"pool_size": ws_cfg.leaderboard_pool_size, "max_trades": ws_cfg.max_trade_count_for_selectivity,
+         "min_pnl": ws_cfg.min_pnl_usd, "min_age": ws_cfg.min_wallet_age_days},
+        {"pool_size": ws_cfg.leaderboard_pool_size * 2, "max_trades": ws_cfg.max_trade_count_for_selectivity * 2,
+         "min_pnl": ws_cfg.min_pnl_usd, "min_age": ws_cfg.min_wallet_age_days * 0.66},
+        {"pool_size": ws_cfg.leaderboard_pool_size * 4, "max_trades": ws_cfg.max_trade_count_for_selectivity * 4,
+         "min_pnl": ws_cfg.min_pnl_usd * 0.5, "min_age": ws_cfg.min_wallet_age_days * 0.33},
+    ]
+
+    qualifying = []
+    for i, params in enumerate(attempts):
+        print(f"\n[run {run_id}] Wallet scan attempt {i+1}/{len(attempts)}: "
+              f"pool={params['pool_size']}, max_trades={params['max_trades']}, "
+              f"min_pnl=${params['min_pnl']:.0f}, min_age={params['min_age']:.0f}d...")
+        qualifying = _scan_wallets_with_params(**params)
+        print(f"[run {run_id}] Attempt {i+1} found {len(qualifying)} qualifying wallet(s).")
+        if len(qualifying) >= target_min_wallets:
+            break
+
+    if not qualifying:
+        print(f"[run {run_id}] Wallet scan: 0 wallets qualified even after broadening filters.")
         return
 
+    new_count = 0
+    for wallet_record in qualifying:
+        is_new = db.upsert_wallet_candidate(run_id, wallet_record)
+        if is_new:
+            new_count += 1
+            if send_wallet_alert(wallet_record):
+                print(f"  Alerted on new wallet candidate: {wallet_record.get('username') or wallet_record['wallet_address']}")
+
+    print(f"[run {run_id}] Wallet scan: {len(qualifying)} wallet(s) evaluated, {new_count} newly discovered.")
+
+
+def _scan_wallets_with_params(pool_size: int, max_trades: int, min_pnl: float, min_age: float) -> list:
+    try:
+        leaderboard = fetch_leaderboard(pool_size=int(pool_size))
+    except ApiError as e:
+        print(f"WARNING: leaderboard fetch failed: {e}", file=sys.stderr)
+        return []
+
     now = datetime.now(timezone.utc).timestamp()
-    new_count, evaluated_count = 0, 0
+    results = []
 
     for entry in leaderboard:
-        if entry["pnl"] < ws_cfg.min_pnl_usd:
+        if entry["pnl"] < min_pnl:
             continue
         wallet = entry["wallet_address"]
         if not wallet:
             continue
 
         try:
-            summary = fetch_wallet_trade_summary(wallet, max_trades=ws_cfg.max_trade_count_for_selectivity)
+            summary = fetch_wallet_trade_summary(wallet, max_trades=int(max_trades))
         except ApiError:
             continue
 
@@ -229,7 +271,7 @@ def _run_wallet_scan(run_id: int):
             continue
 
         wallet_age_days = (now - summary["first_trade_ts"]) / 86400
-        if wallet_age_days < ws_cfg.min_wallet_age_days:
+        if wallet_age_days < min_age:
             continue
 
         try:
@@ -245,20 +287,17 @@ def _run_wallet_scan(run_id: int):
         features["wallet_age_days"] = round(wallet_age_days, 1)
 
         evaluation = evaluate_wallet(closed_positions, features)
-        evaluated_count += 1
 
         wallet_record = _build_wallet_record(
             wallet=wallet, entry=entry, features=features, evaluation=evaluation,
             activity=activity, closed_positions=closed_positions, open_positions=open_positions,
         )
+        results.append(wallet_record)
 
-        is_new = db.upsert_wallet_candidate(run_id, wallet_record)
-        if is_new:
-            new_count += 1
-            if send_wallet_alert(wallet_record):
-                print(f"  Alerted on new wallet candidate: {wallet_record.get('username') or wallet}")
-
-    print(f"[run {run_id}] Wallet scan: {evaluated_count} wallet(s) evaluated, {new_count} newly discovered.")
+    # Rank by copy_trade_score so the best candidates lead, in case more
+    # than target_min_wallets qualified.
+    results.sort(key=lambda w: -(w.get("copy_trade_score") or 0))
+    return results
 
 
 def _build_wallet_record(wallet: str, entry: dict, features: dict, evaluation: dict,

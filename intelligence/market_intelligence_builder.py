@@ -38,6 +38,7 @@ def build_report(mispricing_signal: dict, market_features: dict, market_question
     verification = run_verification(
         market_id=market_id, market_url=market_url, market_question=market_question,
         resolution_rule=resolution_rule, market_features=market_features,
+        market_category=market_category,
     )
 
     historical = research_precedent(market_id, market_title, closed_events)

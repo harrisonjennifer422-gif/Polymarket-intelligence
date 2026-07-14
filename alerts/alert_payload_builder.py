@@ -35,6 +35,8 @@ def build_payload(report: dict, wallet_profiles: list) -> dict:
     wallet_summary = _wallet_summary(wallet_profiles)
     main_risks, failure_conditions = _risks_and_failure(report, historical)
 
+    decision_statement = _decision_statement(mispricing, report, market_title)
+
     ctas = build_ctas(
         market_url=report.get("market_url", ""),
         source_urls=verification.get("source_urls", []) or historical.get("source_urls", []),
@@ -44,6 +46,7 @@ def build_payload(report: dict, wallet_profiles: list) -> dict:
     return {
         "title": f"{emoji} {market_title}",
         "market_url": report.get("market_url", ""),
+        "decision_statement": decision_statement,
         "plain_explanation": plain_explanation,
         "evidence_summary": evidence_summary,
         "historical_summary": historical_summary,
@@ -57,6 +60,36 @@ def build_payload(report: dict, wallet_profiles: list) -> dict:
         "wallet_addresses": report.get("influential_wallets", []) if discord_cfg.show_wallet_addresses else [],
         "sent_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _decision_statement(mispricing: dict, report: dict, market_title: str) -> str:
+    """
+    Builds the explicit, contract-level decision line required for every
+    alert - names the exact market, the exact side, and the exact price,
+    rather than a bare "Buy YES"/"Buy NO".
+    """
+    label = report["decision_label"]
+    signal_type = mispricing.get("signal_type", "")
+    implied_prob = mispricing.get("implied_probability", 0.0)
+
+    if label == "MONITOR":
+        return f"Monitor only — \"{market_title}\": edge detected but not yet confirmed enough to act."
+    if label == "NO_TRADE":
+        return f"No trade — \"{market_title}\": {report.get('why_this_side', 'insufficient edge or evidence')}"
+
+    side = "YES" if label == "BUY_YES" else "NO"
+
+    if signal_type == "arbitrage":
+        num_outcomes = mispricing.get("_num_outcomes", "several")
+        outcome_sum = mispricing.get("implied_probability", 0.0)
+        return (
+            f"Buy YES on ALL {num_outcomes} outcomes in \"{market_title}\" "
+            f"(combined cost {outcome_sum:.3f} per $1.00 guaranteed payout — "
+            f"buy the full basket, not a single outcome)."
+        )
+
+    # Cross-platform / single binary market - name the exact contract
+    return f"Buy {side} on \"{market_title}\" at {implied_prob:.2f} ({implied_prob*100:.0f}% implied probability)."
 
 
 def _plain_explanation(mispricing: dict, report: dict) -> str:
@@ -82,14 +115,19 @@ def _plain_explanation(mispricing: dict, report: dict) -> str:
 
 
 def _evidence_summary(verification: dict) -> str:
-    status = verification.get("status", "DISABLED")
+    status = verification.get("status", "INSUFFICIENT_EVIDENCE")
+    tier = verification.get("verification_tier")
+    tier_label = {
+        "free_rss": "✅ Verified via free RSS feeds (Reuters/AP/gov/AI-lab/tech news)",
+        "paid_llm": "✅ Verified via AI-researched web search",
+    }.get(tier, "")
+
     if status == "PASS":
-        return verification.get("explanation", "Evidence verified.")
+        prefix = f"{tier_label}\n" if tier_label else ""
+        return prefix + verification.get("explanation", "Evidence verified.")
     if status == "FAIL":
         return f"⚠️ Evidence check FAILED: {verification.get('explanation', '')}"
-    if status == "DISABLED":
-        return "News verification is disabled for this alert - this is a price-only signal, not news-confirmed."
-    return "Not enough evidence was found to verify this independently yet."
+    return verification.get("explanation") or "Not enough evidence was found to verify this independently yet."
 
 
 def _wallet_summary(wallet_profiles: list) -> str:

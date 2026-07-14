@@ -44,6 +44,7 @@ def _build_market_embed(payload: dict) -> dict:
 
     fields = [
         {"name": "Market", "value": payload["title"][:250], "inline": False},
+        {"name": "📋 Decision", "value": payload.get("decision_statement", "")[:1000], "inline": False},
         {"name": "In plain terms", "value": payload["plain_explanation"][:1000], "inline": False},
         {"name": "Decision", "value": f"{payload['decision_label']} (confidence: {payload['confidence']})", "inline": True},
         {"name": "Suggested size", "value": f"{payload['suggested_size_pct']:.1f}% of risk budget", "inline": True},
@@ -78,13 +79,14 @@ def _build_market_embed(payload: dict) -> dict:
 
 
 def _build_wallet_embed(wallet_profile: dict) -> dict:
-    name = wallet_profile.get("username") or wallet_profile.get("wallet_address", "")[:10] + "…"
+    address = wallet_profile.get("wallet_address", "")
+    name = wallet_profile.get("username") or (address[:10] + "…" if address else "unknown")
     verdict_emoji = {"copy": "✅", "watch": "🟡", "avoid": "⚠️"}.get(
         wallet_profile.get("copy_trade_recommendation"), "🟡"
     )
 
     fields = [
-        {"name": "Wallet", "value": f"`{wallet_profile.get('wallet_address', '')}`", "inline": False},
+        {"name": "📬 Wallet Address", "value": f"`{address}`" if address else "N/A", "inline": False},
         {"name": "Behavior label", "value": wallet_profile.get("behavior_label", "unknown"), "inline": True},
         {"name": "Copy-trade score", "value": f"{wallet_profile.get('copy_trade_score', 0)}/100", "inline": True},
         {"name": "Win rate", "value": _fmt_pct(wallet_profile.get("win_rate")), "inline": True},
@@ -98,6 +100,7 @@ def _build_wallet_embed(wallet_profile: dict) -> dict:
     ]
 
     return {
+
         "title": f"🟢 New wallet candidate — {name}",
         "color": 0x2ECC71,
         "fields": fields,
