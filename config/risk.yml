@@ -1,7 +1,0 @@
-min_liquidity_usd: 1000
-min_volume_24h_usd: 500
-min_depth_usd: 500
-max_position_size_pct_of_bankroll: 5.0
-default_bankroll_usd: null   # null = sizing is shown as % only, never $
-edge_threshold_low: 0.05
-edge_threshold_high: 0.10
