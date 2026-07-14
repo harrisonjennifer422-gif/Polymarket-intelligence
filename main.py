@@ -107,6 +107,7 @@ def run_scan(categories: list, max_per_category: int, max_kalshi: int, include_w
 
     reports_built = 0
     alerts_sent = 0
+    report_summaries = []  # for detailed per-signal logging below
     for signal in all_signals:
         market = market_lookup.get(signal["market_id"])
         event = event_lookup.get(signal["market_id"])  # arbitrage signals key by event_id
@@ -123,9 +124,20 @@ def run_scan(categories: list, max_per_category: int, max_kalshi: int, include_w
             question = event.get("title", "")
             resolution_rule = ""
             market_title = event.get("title", "")
+            # Arbitrage signals span multiple markets within this event - use
+            # real aggregated data across the neg-risk markets, not hardcoded
+            # zeros. min_liquidity is already computed by edge_detector;
+            # volume/depth are summed across the same markets that fed the
+            # arbitrage check, so this reflects genuine tradability, not a
+            # placeholder that would fail every liquidity check by construction.
+            neg_risk_markets = [m for m in event["markets"] if m.get("neg_risk")]
+            total_volume = sum(m.get("volume_24h", 0.0) for m in neg_risk_markets)
+            min_liquidity = signal.get("_min_liquidity", 0.0)
             m_features = {
-                "liquidity_usd": signal.get("_min_liquidity", 0.0),
-                "volume_24h_usd": 0.0, "time_to_resolution_days": None,
+                "liquidity_usd": min_liquidity,
+                "volume_24h_usd": total_volume,
+                "depth_usd": min_liquidity,  # no live order book for a basket - liquidity is the honest proxy
+                "time_to_resolution_days": None,
             }
         else:
             continue  # signal references a market/event we no longer have - skip safely
@@ -142,13 +154,32 @@ def run_scan(categories: list, max_per_category: int, max_kalshi: int, include_w
         db.save_record(run_id, "MarketIntelligenceReport", report, market_id=signal["market_id"])
         reports_built += 1
 
-        if _should_alert(report, signal):
+        will_alert = _should_alert(report, signal)
+        alert_reason = ""
+        if not will_alert:
+            if report["decision_label"] not in ("BUY_YES", "BUY_NO"):
+                alert_reason = f"decision={report['decision_label']} (not a trade call)"
+            else:
+                alert_reason = (
+                    f"edge {signal.get('edge_size', 0)*100:.1f}pp below alert "
+                    f"threshold {discord_cfg.alert_min_deviation*100:.1f}pp"
+                )
+
+        report_summaries.append({
+            "title": market_title[:80], "signal_type": signal.get("signal_type"),
+            "edge_pp": signal.get("edge_size", 0.0) * 100,
+            "decision": report["decision_label"], "confidence": report.get("confidence_tier"),
+            "will_alert": will_alert, "skip_reason": alert_reason,
+        })
+
+        if will_alert:
             payload = build_payload(report, wallet_profiles=relevant_wallets)
             db.save_record(run_id, "DiscordAlertPayload", payload, market_id=signal["market_id"])
             if send_market_alert(payload):
                 alerts_sent += 1
 
     db.finish_run(run_id, len(events), poly_market_count, len(kalshi_markets))
+    _print_report_details(run_id, report_summaries)
     _print_summary(run_id, events, kalshi_markets, all_signals, reports_built, alerts_sent)
 
     if include_wallet_scan:
@@ -377,6 +408,16 @@ def _describe_behavior(trades_per_day, distinct_events, buy_ratio, avg_trade_siz
         f"Average trade size is roughly ${avg_trade_size_usd:,.0f}, with a "
         f"largest single trade of ${largest_trade_usd:,.0f}."
     )
+
+
+def _print_report_details(run_id: int, report_summaries: list):
+    if not report_summaries:
+        return
+    print(f"\n--- [run {run_id}] SIGNAL-BY-SIGNAL DETAIL ---")
+    for r in report_summaries:
+        status = "🔔 ALERTED" if r["will_alert"] else f"skipped ({r['skip_reason']})"
+        print(f"  [{r['edge_pp']:.1f}pp | {r['signal_type']}] {r['title']!r}")
+        print(f"      decision={r['decision']} confidence={r['confidence']} -> {status}")
 
 
 def _print_summary(run_id, events, kalshi_markets, signals, reports_built, alerts_sent):
