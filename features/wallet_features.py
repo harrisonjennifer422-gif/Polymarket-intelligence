@@ -38,6 +38,8 @@ def compute_wallet_features(wallet_address: str, activity: list, closed_position
     market_breadth = len(event_counter)
     market_hhi = _herfindahl_index(event_counter)
 
+    days_since_last_trade = _compute_recency(activity)
+
     return {
         "wallet_address": wallet_address,
         "trade_count": trade_count,
@@ -51,7 +53,25 @@ def compute_wallet_features(wallet_address: str, activity: list, closed_position
         "market_breadth": market_breadth,
         "market_hhi": market_hhi,
         "top_events": [{"event": ev, "trade_count": c} for ev, c in event_counter.most_common(5)],
+        "days_since_last_trade": days_since_last_trade,
     }
+
+
+def _compute_recency(activity: list) -> float:
+    """
+    Days since this wallet's most recent trade. This is the honest check
+    for "is this wallet actually still active right now" - a great
+    historical win rate from a wallet that hasn't traded in a month is a
+    poor copy-trading candidate regardless of past skill.
+    """
+    if not activity:
+        return float("inf")
+    timestamps = [a["timestamp"] for a in activity if a.get("timestamp")]
+    if not timestamps:
+        return float("inf")
+    last_ts = max(timestamps)
+    now = datetime.now(timezone.utc).timestamp()
+    return round((now - last_ts) / 86400, 1)
 
 
 def _compute_max_drawdown(closed_positions: list) -> float:

@@ -92,6 +92,7 @@ def _build_wallet_embed(wallet_profile: dict) -> dict:
         {"name": "Win rate", "value": _fmt_pct(wallet_profile.get("win_rate")), "inline": True},
         {"name": "PnL (lifetime)", "value": f"${wallet_profile.get('pnl_lifetime', 0):,.0f}", "inline": True},
         {"name": "Trades/day", "value": f"{wallet_profile.get('trades_per_day', 0):.2f}", "inline": True},
+        {"name": "🕐 Last active", "value": _fmt_recency(wallet_profile.get("days_since_last_trade")), "inline": True},
         {
             "name": f"{verdict_emoji} {wallet_profile.get('copy_trade_recommendation', 'watch').upper()}",
             "value": wallet_profile.get("why_copy_or_not", "")[:1000],
@@ -110,6 +111,18 @@ def _build_wallet_embed(wallet_profile: dict) -> dict:
 
 def _fmt_pct(val):
     return f"{val*100:.0f}%" if val is not None else "N/A"
+
+
+def _fmt_recency(days):
+    if days is None or days == float("inf"):
+        return "unknown"
+    if days < 1:
+        return "today"
+    if days <= 7:
+        return f"{days:.0f} days ago"
+    if days <= 14:
+        return f"{days:.0f} days ago ⚠️"
+    return f"{days:.0f} days ago ⚠️ DORMANT"
 
 
 def _post(webhook_url: str, payload: dict) -> bool:

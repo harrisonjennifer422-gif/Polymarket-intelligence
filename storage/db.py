@@ -91,12 +91,20 @@ CREATE TABLE IF NOT EXISTS wallet_candidates (
     copy_trade_score INTEGER,
     copy_trade_recommendation TEXT,
     why_copy_or_not TEXT,
+    days_since_last_trade REAL,
     first_seen_run_id INTEGER,
     first_seen_at TEXT NOT NULL,
     last_seen_run_id INTEGER,
     last_seen_at TEXT NOT NULL
 );
 """
+
+# Columns added after the original table definition - migrated in on
+# startup so an existing database (e.g. from before this field existed)
+# upgrades cleanly instead of crashing on a missing column.
+_WALLET_MIGRATION_COLUMNS = [
+    ("days_since_last_trade", "REAL"),
+]
 
 
 @contextmanager
@@ -114,6 +122,14 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _migrate_wallet_columns(conn)
+
+
+def _migrate_wallet_columns(conn):
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(wallet_candidates)")}
+    for col_name, col_type in _WALLET_MIGRATION_COLUMNS:
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE wallet_candidates ADD COLUMN {col_name} {col_type}")
 
 
 def start_run() -> int:
@@ -172,7 +188,7 @@ _WALLET_COLUMNS = [
     "total_realized_pnl", "trades_per_day", "distinct_events", "top_events", "buy_ratio",
     "avg_trade_size_usd", "largest_trade_usd", "behavioral_pattern", "open_positions_count",
     "open_exposure_usd", "behavior_label", "copy_trade_score", "copy_trade_recommendation",
-    "why_copy_or_not",
+    "why_copy_or_not", "days_since_last_trade",
 ]
 
 

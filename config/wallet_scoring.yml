@@ -24,3 +24,10 @@ taxonomy:
   smart_money_min_win_rate: 0.60
   smart_money_min_breadth: 3
   specialist_max_breadth: 2
+activity_recency:
+  # A wallet can have a great historical record and still be a bad
+  # copy-trade candidate right now if it's gone dormant. These thresholds
+  # downgrade the recommendation regardless of score - past skill isn't
+  # proof the wallet is still actively finding edge.
+  max_days_dormant_for_copy: 14    # >14 days since last trade -> never "copy", capped at "watch"
+  max_days_dormant_for_watch: 45   # >45 days since last trade -> downgraded to "avoid" (likely inactive/abandoned wallet)

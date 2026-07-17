@@ -388,6 +388,7 @@ def _build_wallet_record(wallet: str, entry: dict, features: dict, evaluation: d
         "copy_trade_recommendation": evaluation.get("copy_trade_recommendation"),
         "why_copy_or_not": evaluation.get("why_copy_or_not"),
         "pnl_lifetime": pnl_lifetime,
+        "days_since_last_trade": features.get("days_since_last_trade"),
     }
 
 
