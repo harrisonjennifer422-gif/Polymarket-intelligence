@@ -1,0 +1,18 @@
+# Real Polymarket Gamma tag IDs (confirmed against Polymarket's own
+# open-source frontend code).
+tag_ids:
+  politics: 2
+  crypto: 21
+  geopolitics: 100265
+  finance: 120
+  sports: 100639
+  tech: 1401
+  culture: 596
+categories_to_scan:
+  - politics
+  - crypto
+  - geopolitics
+  - finance
+  - tech
+  - culture
+max_events_per_category: 60
